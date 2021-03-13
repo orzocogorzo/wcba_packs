@@ -75,93 +75,94 @@ function wcba_create_pack (WP_REST_Request $request) {
 	try {
 		$payload = json_decode($request->get_body(), true);
 
-        	$product = new WC_Product_Variable();
-		$pack_name = filter_var($payload["name"], FILTER_SANITIZE_STRING, FILTER_FLAG_STRIP_LOW);
-        	$product->set_name($pack_name);
-        	$product->set_status("draft");
-        	$product->set_catalog_visibility("hidden");
-        	$product->set_description("Producte creat com a pack automàtic, recorda fer-lo visible per que pugui ser trobat a la botiga.");
-        	# $product->set_price(10);
-		$product->set_sku("wcba_packs_".str_replace(" ", "_", strtolower($pack_name)));
-        	# $product->set_manage_stock(true);
-        	# $product->set_stock_quantity(100);
-        	$product->set_reviews_allowed(true);
-        	$product->set_category_ids(array(43));
-        	$id = $product->save();
+        	$pack = new WC_Product_Variable();
+        	$pack->set_name($payload["name"]);
+        	$pack->set_status("publish");
+        	$pack->set_catalog_visibility("hidden");
+        	$pack->set_description("Producte creat com a pack automàtic, recorda fer-lo visible per que pugui ser trobat a la botiga.");
+		$pack->set_sku("wcba_packs_".str_replace(" ", "_", strtolower($pack->get_name())));
+        	$pack->set_category_ids(array(43));
+
+        	$id = $pack->save();
         
         	$attributes = wcba_cross_related_attributes($payload["relateds"]);
-		echo json_encode($attributes);
         
-        	$productAttrs = array();
-        	foreach ($attributes as $attribute) {
-        		$attr = wc_sanitize_taxonomy_name(stripslashes($attribute["name"]));
-        		$tax = "pa_".$attr;
-
-			if (!taxonomy_exists($tax)) {
-				register_taxonomy(
-					$tax,
-					"product_variation",
-					array(
-						"hierarchical" => false,
-						# "labels" => array(ucfirst(strtolower($attr))),
-						"query_var" => true,
-						"rewrite" => array(
-							"slug" => sanitize_title($attr)
-						)
-					)
+		if ($attributes) {
+			$i = 0;
+			$pack_attrs = array();
+        		foreach ($attributes as $attr => $options) {
+				$pack_attrs[sanitize_title($attr)] = array(
+					"name" => wc_clean($attr),
+					"value" => implode("|", $options),
+					"position" => $i,
+					"is_visible" => 1,
+					"is_variation" => 1,
+					"is_taxonomy" => 0
 				);
-			}
-
-        		if ($attribute["options"]) {
-        			foreach ($attribute["options"] as $option) {
-					if (!term_exists($option, $tax)) {
-						wp_insert_term($option, $tax);
-					}
-        				wp_set_object_terms($id, $option, $tax, true);
-        				$productAttrs[sanitize_title($tax)] = array(
-        					"name" => sanitize_title($tax),
-						"value" => $option,
-        					# "value" => $attribute["options"],
-        					# "position" => $attribute["position"],
-        					"is_visible" => "1", #$attribute["visible"],
-        					"is_variation" => "1", #$attribute["variation"],
-        					"is_taxonomy" => "1"
-        				);
-        				update_post_meta($id, "_product_attributes", $productAttrs);
-        			}
         		}
+			update_post_meta($id, "_product_attributes", $pack_attrs);
+			delete_transient('wc_attribute_taxonomies');
+		}
 
-        	}
-
-
-		$product_meta = wp_get_post_terms($id, $tax, array("fields" => "names"));
-		return rest_ensure_response($product_meta);
-        
         	$variations = wcba_cross_related_variations($payload["relateds"]);
+		# echo json_encode($variations);
         
         	if ($variations) {
         		foreach ($variations as $d) {
-        			$var = new WC_Product_Variation();
+				$post = array(
+					"post_title" => $pack->get_name(),
+					"post_name" => "product-".$id."-variation",
+					"post_status" => "publish",
+					"post_parent" => $id,
+					"post_type" => "product_variation",
+					"guid" => $pack->get_permalink()
+				);
+				$var_id = wp_insert_post($post);
+				$var = new WC_Product_Variation($var_id);
         			$var->set_parent_id($id);
         			$var->set_price($d["price"]);
+				$var->set_regular_price($d["price"]);
         			$var->set_sku($d["sku"]);
         			$var->set_manage_stock($d["manage_stock"]);
         			$var->set_stock_quantity($d["stock_quantity"]);
         			$var->set_stock_status($d["instock"]);
-        
-        			$var_attrs = array();
-        			foreach ($d["attributes"] as $attr) {
-        				$tax= "pa_".wc_sanitize_taxonomy_name(stripslashes($attr["name"]));
-        				$slug = wc_sanitize_taxonomy_name(stripslashes($attr["option"]));
-        				$var_attrs[$tax] = $slug;
-        			}
-        			$var->set_attributes($var_attrs);
+
+				foreach ($d["attributes"] as $attr => $opt) {
+					$tax = "pa_".wc_sanitize_taxonomy_name(stripslashes($attr));	
+					if (!taxonomy_exists($tax)) {
+						register_taxonomy(
+							$tax,
+							"product_variation",
+							array(
+								"hierarchical" => false,
+								"label" => ucfirst($attr),
+								"query_var" => true,
+								"rewrite" => array("slug" => str_replace("pa_", "", $tax))
+							)
+						);
+					}
+
+					if (!term_exists($opt, $tax)) {
+						wp_insert_term($opt, $tax);
+					}
+
+					$slug = get_term_by("name", $opt, $tax)->slug;
+
+					$post_term = wp_get_post_terms($id, $tax, array("fields" => "names"));
+
+					if (!in_array($opt, $post_terms)) {
+						wp_set_post_terms($id, $opt, $tax, true);
+					}
+
+					update_post_meta($var_id, $tax, $slug);
+
+				}
         			$var->save();
         		}
         	}
 
-        	$product = wc_get_product($id);
-        	echo json_encode($product->get_data());
+        	$pack = wc_get_product($id);
+        	echo json_encode($pack->get_data());
 	} catch (Exception $e) {
 		echo '{"error": "'.$e->getMessage().'"}';
 	}
@@ -180,49 +181,44 @@ function wcba_get_related_products ($ids) {
 function wcba_cross_related_attributes ($ids) {
 	$products = wcba_get_related_products($ids);
 
-	$related_taxonomies = array();
+	$attributes = array();
 	foreach ($products as $p) {
-		$p_name = filter_var($p->get_name(), FILTER_SANITIZE_STRING, FILTER_FLAG_STRIP_LOW);
+		$p_name = $p->get_name();
 		if ($p->is_type("variable")) {
-			$attrs = get_post_meta($p->get_ID(), "_product_attributes")[0];
-			foreach ($attrs as $attr) {
-				$related_taxonomies[] = array(
-					"name" => $p_name." ".$attr["name"],
-					"options" => array_map("trim", explode("|", $attr["value"])),
-					# "taxonomy" => "1",
-					# "position" => "1", #$attr["position"],
-					# "visible" => "1", #$attr["is_visible"],
-					# "variation" => "1" #$attr["is_variation"]
-				);
+			$p_attrs = get_post_meta($p->get_ID(), "_product_attributes")[0];
+			foreach ($p_attrs as $attr) {
+				$attributes[
+					$p_name." ".$attr["name"]
+				] = array_map("trim", explode("|", $attr["value"]));
 			}
 		}
 	}
 
-	return $related_taxonomies;
+	return $attributes;
 }
 
 function wcba_cross_related_variations ($ids) {
 	$products = wcba_get_related_products($ids);
 
-	$pack_variations = array();
+	$variations = array();
 	$related_names = array();
 	$related_variations = array();
-	foreach ($products as $product) {
-		if ($product->is_type("variable")) {
-			$related_names[] = filter_var($product->get_name(), FILTER_SANITIZE_STRING, FILTER_FLAG_STRIP_LOW);
-			$related_variations[] = $product->get_available_variations();
+	foreach ($products as $p) {
+		if ($p->is_type("variable")) {
+			$related_names[] = $p->get_name();
+			$related_variations[] = $p->get_available_variations();
 		}
 	}
 
 	$l = count($related_variations);
 	for ($i = 0; $i < $l; $i++) {
-		$name1 = $related_names[$i];
+		$n1 = $related_names[$i];
 		$p1 = $related_variations[$i];
 		for ($j = $i; $j < $l; $j++) {
 			if ($i == $j) {
 				continue;
 			} else {
-				$name2 = $related_names[$j];
+				$n2 = $related_names[$j];
 				$p2 = $related_variations[$j];
 				foreach ($p1 as $var1) {
 					foreach ($p2 as $var2) {
@@ -233,16 +229,14 @@ function wcba_cross_related_variations ($ids) {
 						$new_var["instock"] = $new_var["stock_quantity"] > 0;
 						$new_var["attributes"] = array();
 						foreach ($var1["attributes"] as $attr => $val) {
-							$new_var["attributes"][] = array(
-								"name" => $name1." ".ucfirst(str_replace("-", " ", str_replace("attribute_", "", strtolower($attr)))),
-								"option" => $val
-							);
+							$new_var["attributes"][
+								$n1." ".ucfirst(str_replace("-", " ", str_replace("attribute_", "", strtolower($attr))))
+							] = $val;
 						}
 						foreach ($var2["attributes"] as $attr => $val) {
-							$new_var["attributes"][] = array(
-								"name" => $name2." ".ucfirst(str_replace("-", " ", str_replace("attribute_", "", strtolower($attr)))),
-								"option" => $val
-							);
+							$new_var["attributes"][
+								$n2." ".ucfirst(str_replace("-", " ", str_replace("attribute_", "", strtolower($attr))))
+							] = $val;
 						}
 						$pack_variations[] = $new_var;
 					}
