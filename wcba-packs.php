@@ -4,19 +4,26 @@
  * Author: Lèmur
  */
 
-add_action("woocommerce_payment_complete", "wcba_on_payment_complete");
-function wcba_on_payment_complete ($order_id) {
+$log_path = dirname(__FILE__)."/log";
+
+add_action("woocommerce_thankyou", "wcba_on_thankyou");
+function wcba_on_thankyou ($order_id) {
+	GLOBAL $log_path;
+
+	if (!$order_id) {
+		return;
+	}
+
 	$order = wc_get_order($order_id);
 
-	foreach ($order->get_items() as $item_key => $item) {
+	foreach ($order->get_items() as $item_id => $item) {
 		$product = $item->get_product();
 		$sku = $product->get_sku();
+		$qty = $item->get_quantity();
 
-		if (substr($sku, 0, 7) == "ba_pack") { 
-			# if ($sku == "ba_pack_descompte") {
+		if (preg_match("^wcba_packs_", $sku)) {
 			$data = $item->get_data();
-			$string = serialize($data);
-			file_put_contents("log.txt", $string);
+			file_put_contents($log_path."/on_payment.txt", print_r($data));
 		}
 	}
 }
