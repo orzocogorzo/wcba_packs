@@ -1,283 +1,323 @@
 <?php
+
 /**
  * Plugin Name: WooCommerce BA Packs
  * Author: Lèmur
  */
 
-$log_path = dirname(__FILE__)."/log";
-
-add_action("woocommerce_thankyou", "wcba_on_thankyou");
-function wcba_on_thankyou ($order_id) {
-	GLOBAL $log_path;
-
-	if (!$order_id) {
-		return;
-	}
-
-	$order = wc_get_order($order_id);
-
-	foreach ($order->get_items() as $item_id => $item) {
-		$product = $item->get_product();
-		$sku = $product->get_sku();
-		$qty = $item->get_quantity();
-
-		if (preg_match("^wcba_packs_", $sku)) {
-			$data = $item->get_data();
-			file_put_contents($log_path."/on_payment.txt", print_r($data));
-		}
-	}
+if (!defined("ABSPATH")) {
+	return;
 }
 
-add_action("rest_api_init", function () {
-	register_rest_route("wcba_packs/v1", "/get/(?P<id>[\d]+)", array(
-		"methods" => "GET",
-		"callback" => "wcba_get_pack",
-		"args" => array(
-			"id" => array(
-				"sanitize_callback" => "absint",
-				"required" => true,
-				"type" => "integer",
-			)
-		)
-	));
-	register_rest_route("wcba_packs/v1", "/add", array(
-		"methods" => "POST",
-		"callback" => "wcba_create_pack",
-		"args" => array(
-			"name" => array(
-				"sanitize_callback" => "sanitize_text_field",
-				"required" => true,
-				"type" => "string"
-			)
-		)
-	));
-	register_rest_route("wcba_packs/v1", "/list", array(
-		"methods" => "GET",
-		"callback" => "wcba_list_packs",
-	));
-	register_rest_route("wcba_packs/v1", "/delete/(?P<id>[\d]+)", array(
-		"methods" => "DELETE",
-		"callback" => "wcba_delete_pack",
-		"args" => array(
-			"id" => array(
-				"sanitize_callback" => "absint",
-				"required" => true,
-				"type" => "integer",
-			)
-		)
-	));
-});
+class WCBA_Packs {
 
-function wcba_get_pack (WP_REST_Request $request) {
-	$pack_id = (string) $request["id"];
-	$pack = wc_get_product(intval($pack_id));
-	if ($pack) {
-		echo json_encode($pack->get_data());
-	} else {
-		echo "{}";
+	/**
+	 * Build the instance
+	 */
+	public function __construct () {
+		add_action("woocommerce_loaded", array(
+			$this,
+			"load_plugin"
+		));
+
+		add_filter("product_type_selector", array(
+			$this,
+			"add_type"
+		));
+
+		register_activation_hook(__FILE__, array(
+			$this,
+			"install"
+		));
+
+		add_filter("woocommerce_data_stores", function ($stores){
+    			$stores["product-wcba_pack"] = "WC_Product_Variable_Data_Store_CPT";
+    			return $stores;
+		});
+
+		add_action("admin_enqueue_scripts", array(
+			$this,
+			"enqueue_scripts"
+		));
+
+		add_action("woocoomerce_product_options_general_product_data", function () {
+			echo "<div class=\"options_group show_if_pack clear\"></div>";
+		});
+
+		add_filter("woocommerce_product_data_tabs", array(
+			$this,
+			"add_product_tab"
+		), 50);
+
+		add_action("woocommerce_product_data_panels", array(
+			$this,
+			"add_product_tab_content"
+		));
+
+		add_action("wp_ajax_wcba_pack_update", array(
+			$this,
+			"on_pack_update"
+		));
+
+		add_action("woocommerce_update_product", array(
+			$this,
+			"save_pack_settings"
+		));
+
+		add_action("woocommerce_thankyou", array(
+			$this,
+			"on_thankyou"
+		));
+
+		add_filter("woocommerce_locate_template", array(
+			$this,
+			"locate_template"
+		));
 	}
-}
 
-function wcba_create_pack (WP_REST_Request $request) {
-	try {
-		$payload = json_decode($request->get_body(), true);
+	/**
+	 * Load WC Dependencies
+	 *
+	 * @return void
+	 */
+	public function load_plugin () {
+		require_once "includes/class-wcba-product-pack.php";
+		require_once "wcba-rest.php";
+	}
 
-        	$pack = new WC_Product_Variable();
-        	$pack->set_name($payload["name"]);
-        	$pack->set_status("publish");
-        	$pack->set_catalog_visibility("hidden");
-        	$pack->set_description("Producte creat com a pack automàtic, recorda fer-lo visible per que pugui ser trobat a la botiga.");
-		$pack->set_sku("wcba_packs_".str_replace(" ", "_", strtolower($pack->get_name())));
-        	$pack->set_category_ids(array(43));
+	/**
+	 * Advanced Type
+	 *
+	 * @param array $types
+	 * @return void
+	 */
+	public function add_type ($types) {
+		$types["wcba_pack"] = __("Pack Product");
+		return $types;
+	}
 
-        	$id = $pack->save();
-        
-        	$attributes = wcba_cross_related_attributes($payload["relateds"]);
-        
-		if ($attributes) {
-			$i = 0;
-			$pack_attrs = array();
-        		foreach ($attributes as $attr => $options) {
-				$pack_attrs[sanitize_title($attr)] = array(
-					"name" => wc_clean($attr),
-					"value" => implode("|", $options),
-					"position" => $i,
-					"is_visible" => 1,
-					"is_variation" => 1,
-					"is_taxonomy" => 0
-				);
-        		}
-			update_post_meta($id, "_product_attributes", $pack_attrs);
-			delete_transient('wc_attribute_taxonomies');
+	/**
+	 * Installing on activation
+	 * @return void
+	 */
+	public function install () {
+		// If there is no pack product type taxonomy, add it.
+		if (!get_term_by("slug", "wcba_pack", "product_type")) {
+			wp_insert_term("wcba_pack", "product_type");
+		}
+	}
+
+	public function enqueue_scripts ($hook) {
+		GLOBAL $post;
+		if ($hook !== "post.php" && $hook !== "post-new.php") {
+			return;
 		}
 
-        	$variations = wcba_cross_related_variations($payload["relateds"]);
-		# echo json_encode($variations);
-        
-        	if ($variations) {
-        		foreach ($variations as $d) {
-				$post = array(
-					"post_title" => $pack->get_name(),
-					"post_name" => "product-".$id."-variation",
-					"post_status" => "publish",
-					"post_parent" => $id,
-					"post_type" => "product_variation",
-					"guid" => $pack->get_permalink()
-				);
-				$var_id = wp_insert_post($post);
-				$var = new WC_Product_Variation($var_id);
-        			$var->set_parent_id($id);
-        			$var->set_price($d["price"]);
-				$var->set_regular_price($d["price"]);
-        			$var->set_sku($d["sku"]);
-        			$var->set_manage_stock($d["manage_stock"]);
-        			$var->set_stock_quantity($d["stock_quantity"]);
-        			$var->set_stock_status($d["instock"]);
+		wp_enqueue_script(
+			"wcba-packs-script",
+			plugins_url(
+				"js/wcba-packs.js",
+				__FILE__
+			),
+			array("jquery"),
+			"1.0.0",
+			true
+		);
 
-				foreach ($d["attributes"] as $attr => $opt) {
-					$tax = "pa_".wc_sanitize_taxonomy_name(stripslashes($attr));	
-					if (!taxonomy_exists($tax)) {
-						register_taxonomy(
-							$tax,
-							"product_variation",
-							array(
-								"hierarchical" => false,
-								"label" => ucfirst($attr),
-								"query_var" => true,
-								"rewrite" => array("slug" => str_replace("pa_", "", $tax))
-							)
-						);
-					}
+		wp_localize_script(
+			"wcba-packs-script",
+			"my_ajax_obj",
+			array(
+				"ajax_url" => admin_url("admin-ajax.php"),
+				"nonce" => wp_create_nonce("wcba-pack-options"),
+				"post_id" => $post->ID
+			)
+		);
+	}
 
-					if (!term_exists($opt, $tax)) {
-						wp_insert_term($opt, $tax);
-					}
+	/**
+	 * Add Experience 	
+	 * 
+	 * @param array @tabs
+	 * @return array @tabs
+	 */
+	public function add_product_tab ($tabs) {
+		$tabs["wcba_pack"] = array(
+			"label" => __("Pack Options"),
+			"target" => "wcba_pack_options",
+			"class" => "show_if_wcba_pack"
+		);
 
-					$slug = get_term_by("name", $opt, $tax)->slug;
 
-					$post_term = wp_get_post_terms($id, $tax, array("fields" => "names"));
+		$tabs["variations"]["class"][] = "show_if_wcba_pack";
 
-					if (!in_array($opt, $post_terms)) {
-						wp_set_post_terms($id, $opt, $tax, true);
-					}
+		return $tabs;
+	}
 
-					update_post_meta($var_id, $tax, $slug);
-
+	/**
+	 * Add Content to Product Tab
+	 *
+	 * @return void
+	 */
+	public function add_product_tab_content () {
+		global $product_object;
+		?>
+		<div id="wcba_pack_options" class="panel woocommerce_options_panel hidden">
+			<div class="options_group">
+			<?php
+			$relateds = "";
+			if ($product_object) {
+				if ($product_object->is_type("wcba_pack")) {
+					$relateds = $product_object->get_relateds();
 				}
-        			$var->save();
-        		}
-        	}
-
-        	$pack = wc_get_product($id);
-        	echo json_encode($pack->get_data());
-	} catch (Exception $e) {
-		echo '{"error": "'.$e->getMessage().'"}';
-	}
-}
-
-function wcba_get_related_products ($ids) {
- 	$products = array();
-
-	foreach ($ids as $id) {
-		$products[] = wc_get_product(intval($id));
-	}
-
-	return $products;
-}
-
-function wcba_cross_related_attributes ($ids) {
-	$products = wcba_get_related_products($ids);
-
-	$attributes = array();
-	foreach ($products as $p) {
-		$p_name = $p->get_name();
-		if ($p->is_type("variable")) {
-			$p_attrs = get_post_meta($p->get_ID(), "_product_attributes")[0];
-			foreach ($p_attrs as $attr) {
-				$attributes[
-					$p_name." ".$attr["name"]
-				] = array_map("trim", explode("|", $attr["value"]));
 			}
-		}
-	}
 
-	return $attributes;
-}
+			woocommerce_wp_text_input(array(
+				"id" => "wcba_pack_relateds",
+				"label" => __("Related Products"),
+				"value" => $relateds,
+				"default" => "",
+				"placeholder" => "1|2|3"
+			));
 
-function wcba_cross_related_variations ($ids) {
-	$products = wcba_get_related_products($ids);
+			$products = wc_get_products(array(
+				"type" => array(
+					"simple",
+					"variable"
+				)
+			));
 
-	$variations = array();
-	$related_names = array();
-	$related_variations = array();
-	foreach ($products as $p) {
-		if ($p->is_type("variable")) {
-			$related_names[] = $p->get_name();
-			$related_variations[] = $p->get_available_variations();
-		}
-	}
-
-	$l = count($related_variations);
-	for ($i = 0; $i < $l; $i++) {
-		$n1 = $related_names[$i];
-		$p1 = $related_variations[$i];
-		for ($j = $i; $j < $l; $j++) {
-			if ($i == $j) {
-				continue;
-			} else {
-				$n2 = $related_names[$j];
-				$p2 = $related_variations[$j];
-				foreach ($p1 as $var1) {
-					foreach ($p2 as $var2) {
-						$new_var = array();
-						$new_var["price"] = $var1["display_price"] + $var2["display_price"];
-						$new_var["manage_stock"] = 1;
-						$new_var["stock_quantity"] = min($var1["max_qty"], $var2["max_qty"]);
-						$new_var["instock"] = $new_var["stock_quantity"] > 0;
-						$new_var["attributes"] = array();
-						foreach ($var1["attributes"] as $attr => $val) {
-							$new_var["attributes"][
-								$n1." ".ucfirst(str_replace("-", " ", str_replace("attribute_", "", strtolower($attr))))
-							] = $val;
-						}
-						foreach ($var2["attributes"] as $attr => $val) {
-							$new_var["attributes"][
-								$n2." ".ucfirst(str_replace("-", " ", str_replace("attribute_", "", strtolower($attr))))
-							] = $val;
-						}
-						$pack_variations[] = $new_var;
+			$select_options = array();
+			foreach ($products as $product) {
+				$select_options[$product->get_ID()] = $product->get_name();
+			}
+			?>
+			<p class="form-field wcba_pack_store_products_field">
+				<label for="wcba_pack_store_productes">Store Products</label>
+				<select id="wcba_pack_store_products" class="select short" multiple>
+				<?php
+					foreach ($select_options as $id => $name) {
+						echo "<option value=\"".$id."\">".$name."</option>";
 					}
-				}	
+				?>
+				</select>
+			</p>
+			<?php
+			/*$discount = 0;
+			if ($product_object) {
+				if ($product_object->is_type("wcba_pack")) {
+					$discount = $product_object->get_discount();
+				}
+			}
+
+			woocommerce_wp_text_input(array(
+				"id" => "wcba_pack_discount",
+				"label" => __("Discount percentage"),
+				"value" => $discount,
+				"default" => 0,
+				"placeholder" => "add a percentage"
+			));*/
+			?>
+			</div>
+			<div class="toolbar" style="padding: 10px 20px;">
+				<button id="wcba_pack_update" type="button" disabled class="button button-primary">Save data</button>
+			</div>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Save pack metadata on product creation
+	 *
+	 * @param integer $post_id
+	 * @return void
+	 */
+	public function save_pack_settings ($product_id) {
+		$product = wc_get_product($product_id);
+		
+		if ($product && $product->is_type("wcba_pack")) {
+			$relateds = isset($_POST["_pack_relateds"]) ? sanitize_text_field($_POST["_pack_relateds"]) : "";
+			$product->set_relateds($relateds);
+
+			$discount = isset($_POST["_pack_discount"]) && is_numeric($_POST["_pack_discount"]) ? absint($_POST["_pack_discount"]) : 0;
+			$product->set_discount($discount);
+		}
+	}
+
+	public function on_pack_update () {
+		check_ajax_referer("wcba-pack-options");
+
+		$post_id = $_POST["_pack_id"];
+
+		$this->save_pack_settings($post_id);
+
+		$product = wc_get_product($post_id);
+		echo json_encode(array("success" => true));
+
+		wp_die();
+	}
+
+	/**
+	 * Synchronize related products stock after checkout
+	 *
+	 * @param integer $order_id
+	 * @return void
+	 */
+	private function on_thankyou ($order_id) {
+		if (!$order_id) {
+			return;
+		}
+
+		$order = wc_get_order($order_id);
+
+		foreach ($order->get_items() as $item_id => $item) {
+			$product = $item->get_product();
+
+			if ($product->is_type("wcba_pack")) {
+				$qty = $item->get_quantity();
+				$data = $product->get_data();
+				$relateds = $product->get_relateds(true);
+				echo print_r($relateds);
 			}
 		}
 	}
 
-	return $pack_variations;
-}
-
-function wcba_list_packs (WP_REST_Request $request) {
-	$args = array(
-		"category" => "packs"
-	);
-	$packs = wc_get_products($args);
-
-	echo "[";
-	$list = array();
-	foreach ($packs as $pack) {
-		$list[] = json_encode($pack->get_data());
+	/**
+	 * Log messages
+	 *
+	 * @param string @message
+	 * @return void
+	 */
+	private function log ($message) {
+		$log_path = dirname(__FILE__)."/log";
+		file_put_contents($log_path."/log.txt", $data."\n", FILE_APPEND);
 	}
-	echo join(",", $list);
-	echo "]";
-}
 
-function wcba_delete_pack (WP_REST_Request $request) {
-	$pack_id = (string) $request["id"];
-	$pack = wc_get_product(intval($pack_id));
-	if ($pack) {
-		$pack->delete();
-		echo '{"success": true}';
-	} else {
-		echo '{"success": false}';
+	public function locate_template ($template_name, $template_path="", $default_path="") {
+		$file = basename($template_name);
+		$template = str_replace("plugins\/woocommerce\/templates", "plugins/wcba_packs/templates", $template_name);
+		echo $template_name . "\n";
+		return $template_name;
+		$_template = $template;
+		$template_path = $woocommerce->template_url;
+
+		$plugin_path = untrailingslashit( plugin_dir_path( __FILE__ ) )  . '/template/woocommerce/';
+		// Look within passed path within the theme - this is priority
+    		$template = locate_template(array(
+      			$template_path . $template_name,
+      			$template_name
+    		));
+
+   		if (!$template && file_exists($plugin_path . $template_name)) {
+    			$template = $plugin_path . $template_name;
+		}
+
+   		if (!$template) {
+    			$template = $_template;
+		}
+
+   		return $template;
 	}
 }
-?>
+
+new WCBA_Packs ();
