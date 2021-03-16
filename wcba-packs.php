@@ -384,14 +384,6 @@ class WCBA_Packs {
 
 			if ($product->is_type("wcba_pack")) {
 				// pass
-			} else if ($product->get_meta("_wcba_pack_role", true) == "wcba_pack_bundle") {
-				$bundles = $product->get_meta("_wcba_pack_bundles");
-				if ($bundles) {
-					foreach (explode("|", $bundles) as $bundle_id) {
-						$bundle = wc_get_product($bundle_id);
-						wc_update_product_stock($bundle, $qty, "decrease");
-					}	
-				}
 			} else if ($product->is_type("variation")) {
 				$parent = wc_get_product($product->get_parent_id());
 				if ($parent->is_type("wcba_pack")) {
@@ -402,6 +394,16 @@ class WCBA_Packs {
 							wc_update_product_stock($bundle, $qty, "decrease");
 						}
 					}
+				}
+			} else if ($product->get_meta("_wcba_pack_role", true) == "wcba_pack_bundle") {
+				echo "Is reversed bundle\n";
+				$bundles = $product->get_meta("_wcba_pack_bundles");
+				echo "Bundles {$bundles}\n";
+				if ($bundles) {
+					foreach (explode("|", $bundles) as $bundle_id) {
+						$bundle = wc_get_product($bundle_id);
+						wc_update_product_stock($bundle, $qty, "decrease");
+					}	
 				}
 			}
 		}
