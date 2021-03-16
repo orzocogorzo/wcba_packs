@@ -20,7 +20,12 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 			$relateds = array();	
 		}
 
-		update_post_meta($this->get_ID(), "_pack_relateds", $relateds);
+		$obj_relateds = $this->get_relateds();
+		if ($obj_relateds != $relateds) {
+			do_action("wcba_before_update_relateds", $this, $relateds);
+			update_post_meta($this->get_ID(), "_wcba_pack_relateds", $relateds);
+			do_action("wcba_update_relateds", $this, $relateds, $obj_relateds);
+		}
 
 		if ($create_variations) {
 			$this->set_pack_variations();
@@ -28,29 +33,39 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 	}
 
 	public function get_relateds ($as_array=false) {
-		$relateds = $this->get_meta("_pack_relateds", true);
+		$relateds = $this->get_meta("_wcba_pack_relateds", true);
 		if ($as_array) {
 			return array_map("trim", explode("|", $relateds));
 		}
 		return $relateds;
 	}
 
-	public function set_discount ($rate) {
-		if (!is_numeric($rate)) {
-			$rate = 0;
+	public function set_discount ($discount) {
+		if (!is_numeric($discount)) {
+			$discount = 0;
 		}
 
-		$rate = absint($rate);
+		$discount = absint($discount);
 
-		if ($rate > 1) {
-			$rate = $rate / 100;
+		if ($discount > 1) {
+			$discount = $discount / 100;
 		}
 
-		update_post_meta($this->get_ID(), "_pack_discount", $rate);
+		$obj_discount = $this->get_discount(true);
+		if ($obj_discount != $discount) {
+			do_action("wcba_before_update_discount", $this, $discount);
+			update_post_meta($this->get_ID(), "_wcba_pack_discount", $discount);
+			do_action("wcba_update_discount", $this, $discount, $obj_discount);
+		}
 	}
 
 	public function get_discount ($as_factor=false) {
-		$discount = $this->get_meta("_pack_discount", true);
+		$discount = $this->get_meta("_wcba_pack_discount", true);
+
+		if (!$discount) {
+			$discount = 0;
+		}
+
 		if ($as_factor) {
 			return $discount;
 		}
@@ -79,7 +94,9 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 		$attributes = $this->get_cross_related_attributes($products);
 		if ($attributes) {
 			$this->set_cross_related_attributes($attributes);
+			$this->data_store->clear_chaches($this);
 			$this->data_store->create_all_product_variations($this);
+			$this->data_store->clear_chaches($this);
 			$this->setup_variations();
 		}
 	}
@@ -91,10 +108,11 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 			if ($p->is_type("variable")) {
 				$p_attrs = get_post_meta($p->get_ID(), "_product_attributes")[0];
 				foreach ($p_attrs as $attr) {
-					$attributes[
-						$p_name." ".$attr["name"]
-					] = array_map("trim", explode("|", $attr["value"]));
+					$attr_id = $p_name." ".$attr["name"];
+					$attributes[$attr_id] = array_map("trim", explode("|", $attr["value"]));
 				}
+			} else {
+				$attributes[$p_name] = array("default");
 			}
 		}
 
@@ -102,11 +120,10 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 	}
 
 	private function set_cross_related_attributes ($attributes) {
-		$obj_attributes = $this->get_prop("attributes");
 		$pack_attrs = array();
 
 		foreach ($attributes as $attr => $options) {
-			$slug = wc_sanitize_taxonomy_name($attr);
+			$slug = $this->sanitize($attr);
 
 			wp_set_object_terms($this->get_ID(), implode("|", $options), $slug);
 			$pack_attrs[$slug] = array(
@@ -124,37 +141,91 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 
 	private function setup_variations () {
 		$relateds = array_map("wc_get_product", $this->get_relateds(true));
-		$variations = array_map("wc_get_product", $this->get_children());
+		$own_variations = array_map("wc_get_product", $this->get_children());
+		$reverse_bundles = array();
 
-		foreach ($variations as $var) {
-			set_post_meta($var, "_wcba_role", "pack_bundle");
-			$var_relateds = array();
-			$var_attributes = $var->get_variation_attributes(false);
-			foreach ($var_attributes as $attr => $val) {
-				foreach ($relateds as $prod) {
-					if (strpos($attr, $prod->get_name()) !== false) {
-						$var_relateds[] = $prod;	
+		foreach ($own_variations as $own_var) {
+			$price = 0;
+			$stock = null;
+			$manage_stock = false;
+			$bundles = array();
+
+			foreach ($relateds as $rel_prod) {
+				$reverse_bundles[$rel_prod->get_ID()] = array();
+				$rel_prod_name = $this->sanitize($rel_prod->get_name());
+				if ($rel_prod->is_type("variable")) {
+					foreach (array_map("wc_get_product", $rel_prod->get_children()) as $rel_var) {
+						$is_related = true;
+						foreach ($own_var->get_variation_attributes(false) as $own_attr => $own_val) {
+							foreach ($rel_var->get_variation_attributes(false) as $rel_attr => $rel_val) {
+								if (strpos($own_attr, $rel_attr) !== false && strpos($own_attr, $rel_prod_name) !== false) {
+									$is_related = $is_related && $own_val == $rel_val;
+								}
+							}
+						}
+
+						if ($is_related) {
+							$price += (float)$rel_var->get_price();
+							if ($rel_var->get_manage_stock()) {
+								$manage_stock = true;
+								if ($rel_var->get_stock_status() == "instock") {
+									$stock = $stock !== null ? min($stock, $rel_var->get_stock_quantity()) : $rel_var->get_stock_quantity();
+								} else {
+									$stock = 0;
+								}
+							}
+							$bundles[] = $rel_var->get_ID();
+							$reverse_bundles[$rel_prod->get_ID()][] = $own_var->get_ID();
+						}
 					}
+
+				} else {
+					$price += (float)$rel_prod->get_price();
+					if ($rel_prod->get_manage_stock()) {
+						$manage_stock = true;
+						if ($rel_prod->get_stock_status() == "instock") {
+							$stock = $stock !== null ? min($stock, $rel_var->get_stock_quantity()) : $rel_var->get_stock_quantity();
+						} else {
+							$stock = 0;
+						}
+					}
+					$bundles[] = $rel_prod->get_ID();
+					$reverse_bundles[$rel_prod->get_ID()][] = $own_var->get_ID();
 				}
 			}
 
-			$price = 0;
-			$stock = INF;
-			foreach ($var_relateds as $prod) {
-				$price += $prod->get_price();
-				$stock = min($stock, $prod->get_quantity());
-			}
+			$own_var->set_manage_stock($manage_stock);
+			$stock_status = ($stock > 0 || !$manage_stock) ? "instock" : "outofstock";
+			$own_var->set_stock_status($stock_status);
+			$own_var->set_stock_quantity($stock);
 
-			$stock_status = $stock > 0 ? "instock" : "outofstock";
-			$var->set_manage_stock(true);
-			$var->set_stock_status($stock_status);
-			$var->set_stock($stock);
+			$price = (float)$price * (1 - (float)$this->get_discount(true));
+			$own_var->set_price($price);
+			$own_var->set_regular_price($price);
+			$own_var->set_sale_price($price);
 
-			$var->set_price($price);
-			$var->set_regular_price($price);
+			add_post_meta($own_var->get_ID(), "_wcba_pack_bundles", implode("|", $bundles));
 
-			$var->save();
+			$own_var->save();
 		}
+
+		foreach ($relateds as $rel_prod) {
+			add_post_meta($rel_prod->get_ID(), "_wcba_pack_role", "wcba_pack_bundle");
+			add_post_meta($rel_prod->get_ID(), "_wcba_pack_bundles", implode("|", $reverse_bundles[$rel_prod->get_ID()]));
+		}
+	}
+
+	public function clear_bundles () {
+		foreach ($this->get_children() as $child) {
+			$variation = wc_get_product($child);
+			wp_delete_post($variation->get_ID());
+		}
+
+		update_post_meta($this->get_ID(), "_product_attributes", array());
+	}
+
+	private function sanitize ($string) {
+		return wc_sanitize_taxonomy_name($string);
 	}
 }
 ?>

@@ -13,11 +13,14 @@ jQuery(document).ready(function ($) {
 			wcba_pack_relateds: relateds.val(),
 			wcba_pack_discount: discount.val()
 		}, function (data) {
-			update_btn.prop("disabled", false);
 			json = JSON.parse(data);
 			if (json.success) {
 				location.reload();
 			}
+		}).fail(function (err) {
+			console.log(err);	
+		}).always(function () {
+			update_btn.prop("disabled", false);
 		});
 	});
 

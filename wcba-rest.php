@@ -168,7 +168,14 @@ class WCBA_Rest {
 	public function debug (WP_REST_Request $request) {
 		$id = $request["id"];
 		$product = wc_get_product($id);
-		echo json_encode($product->get_data());
+		$variations = $product->get_available_variations(); 
+		#echo json_encode($variations);
+		$variations = array_map("wc_get_product", $product->get_children());
+		$data = array();
+		foreach ($variations as $var) {
+			$data[] = $var->get_data();
+		}
+		echo json_encode($data);
 	}
 }
 
