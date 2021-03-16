@@ -9,14 +9,7 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 		return "wcba_pack";
 	}
 
-	/*public function get_price ($context="view") {
-		$discount = $this->get_meta("_pack_discount", true);
-		$discount = is_numeric($discount) ? max(1, min(0, absint($discount))) : 0;
-		$factor = 1 + $discount;
-		$this->get_prop("price", $context) * $factor;
-	}*/
-
-	public function set_relateds ($relateds) {
+	public function set_relateds ($relateds, $create_variations=false) {
 		if (is_string($relateds) && strpos($relateds, "|")) {
 			$relateds = implode("|", array_map("trim", explode("|", $relateds)));
 		} else if (!is_numeric($relateds)) {
@@ -29,7 +22,9 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 
 		update_post_meta($this->get_ID(), "_pack_relateds", $relateds);
 
-		$this->set_pack_variations();
+		if ($create_variations) {
+			$this->set_pack_variations();
+		}
 	}
 
 	public function get_relateds ($as_array=false) {
@@ -80,16 +75,13 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 
 	private function set_pack_variations () {
 		$products = $this->get_related_products();
+
 		$attributes = $this->get_cross_related_attributes($products);
 		if ($attributes) {
 			$this->set_cross_related_attributes($attributes);
+			$this->data_store->create_all_product_variations($this);
+			$this->setup_variations();
 		}
-
-		# $variations = $this->get_cross_related_variations($products);
-
-        	# if ($variations) {
-		#	$this->set_cross_related_variations($variations);
-		# }
 	}
 
 	private function get_cross_related_attributes ($products) {
@@ -110,133 +102,57 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 	}
 
 	private function set_cross_related_attributes ($attributes) {
-		$i = 0;
+		$obj_attributes = $this->get_prop("attributes");
 		$pack_attrs = array();
+
 		foreach ($attributes as $attr => $options) {
-			wp_set_object_terms($this->get_ID(), implode("|", $options), sanitize_title_with_dashes($attr));
-			$pack_attrs[sanitize_title_with_dashes($attr)] = array(
+			$slug = wc_sanitize_taxonomy_name($attr);
+
+			wp_set_object_terms($this->get_ID(), implode("|", $options), $slug);
+			$pack_attrs[$slug] = array(
 				"name" => wc_clean($attr),
 				"value" => implode("|", $options),
-				"position" => $i,
+				"position" => 0,
 				"is_visible" => 1,
 				"is_variation" => 1,
 				"is_taxonomy" => 0
 			);
 		}
+
 		update_post_meta($this->get_ID(), "_product_attributes", $pack_attrs);
-		delete_transient('wc_attribute_taxonomies');
 	}
 
-	private function get_cross_related_variations ($products) {
-		$variations = array();
-		$related_names = array();
-		$related_variations = array();
-		foreach ($products as $p) {
-			if ($p->is_type("variable")) {
-				$related_names[] = $p->get_name();
-				$related_variations[] = $p->get_available_variations();
-			}
-		}
+	private function setup_variations () {
+		$relateds = array_map("wc_get_product", $this->get_relateds(true));
+		$variations = array_map("wc_get_product", $this->get_children());
 
-		$l = count($related_variations);
-		for ($i = 0; $i < $l; $i++) {
-			$n1 = $related_names[$i];
-			$p1 = $related_variations[$i];
-			for ($j = $i; $j < $l; $j++) {
-				if ($i == $j) {
-					continue;
-				} else {
-					$n2 = $related_names[$j];
-					$p2 = $related_variations[$j];
-					foreach ($p1 as $var1) {
-						foreach ($p2 as $var2) {
-							$new_var = array();
-							$name = array();
-							$new_var["price"] = ($var1["display_price"] + $var2["display_price"]) * (1 - $this->get_discount(true));
-							$new_var["manage_stock"] = 1;
-							$new_var["stock_quantity"] = min($var1["max_qty"], $var2["max_qty"]);
-							$new_var["instock"] = $new_var["stock_quantity"] > 0;
-							$new_var["attributes"] = array();
-							foreach ($var1["attributes"] as $attr => $val) {
-								$attr_name = sanitize_title_with_dashes($n1."-"-str_replace("attribute_", $attr));
-								$name[] = $attr_name."_".$val;
-								$new_var["attributes"][
-									$attr_name
-								] = $val;
-							}
-							foreach ($var2["attributes"] as $attr => $val) {
-								$attr_name = sanitize_title_with_dashes($n2."-".str_replace("attribute_", $attr));
-								$name[] = $attr_name."_".$val;
-								$new_var["attributes"][
-									$attr_name
-								] = $val;
-							}
-							$name = implode("-", $name);
-							$pack_variations[$name] = $new_var;
-						}
-					}	
+		foreach ($variations as $var) {
+			set_post_meta($var, "_wcba_role", "pack_bundle");
+			$var_relateds = array();
+			$var_attributes = $var->get_variation_attributes(false);
+			foreach ($var_attributes as $attr => $val) {
+				foreach ($relateds as $prod) {
+					if (strpos($attr, $prod->get_name()) !== false) {
+						$var_relateds[] = $prod;	
+					}
 				}
 			}
-		}
 
-		return $pack_variations;
-	}
-
-	private function set_cross_related_variations ($variations) {
-		GLOBAL $wpdb;
-		foreach ($variations as $name => $d) {
-			$var_name = "product-".$this->get_ID()."-variation-".$name;
-
-			$var_id = $wpdb->get_var("SELECT ID FROM $wpdb->posts WHERE post_name LIKE '$name'");
-
-			if (!$var_id) {
-				$post = array(
-					"post_title" => $this->get_name(),
-					"post_name" => $var_name,
-					"post_status" => "publish",
-					"post_parent" => $this->get_ID(),
-					"post_type" => "product_variation",
-					"guid" => $this->get_permalink()
-				);
-				$var_id = wp_insert_post($post);
+			$price = 0;
+			$stock = INF;
+			foreach ($var_relateds as $prod) {
+				$price += $prod->get_price();
+				$stock = min($stock, $prod->get_quantity());
 			}
 
-			$var = new WC_Product_Variation($var_id);
-			$var->set_parent_id($this->get_ID());
-			$var->set_price($d["price"]);
-			$var->set_regular_price($d["price"]);
-			$var->set_manage_stock($d["manage_stock"]);
-			$var->set_stock_quantity($d["stock_quantity"]);
-			$var->set_stock_status($d["instock"]);
+			$stock_status = $stock > 0 ? "instock" : "outofstock";
+			$var->set_manage_stock(true);
+			$var->set_stock_status($stock_status);
+			$var->set_stock($stock);
 
-			foreach ($d["attributes"] as $attr => $opt) {
-				$tax = "pa_".wc_sanitize_taxonomy_name($attr);	
-				if (!taxonomy_exists($tax)) {
-					register_taxonomy(
-						$tax,
-						"product_variation",
-						array(
-							"hierarchical" => false,
-							"label" => ucfirst($attr),
-							"query_var" => true,
-							"rewrite" => array("slug" => str_replace("pa_", "", $tax))
-						)
-					);
-				}
+			$var->set_price($price);
+			$var->set_regular_price($price);
 
-				if (!term_exists($opt, $tax)) {
-					wp_insert_term($opt, $tax);
-				}
-
-				$post_term = wp_get_post_terms($var_id, $tax, array("fields" => "names"));
-				if (!in_array($opt, $post_terms)) {
-					wp_set_post_terms($var_id, $opt, $tax, true);
-				}
-
-				$slug = get_term_by("name", $opt, $tax)->slug;
-				update_post_meta($var_id, "attribute_".$tax, $slug);
-
-			}
 			$var->save();
 		}
 	}

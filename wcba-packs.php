@@ -64,6 +64,20 @@ class WCBA_Packs {
 			"save_pack_settings"
 		));
 
+		add_filter("woocommerce_product_get_price", array(
+			$this,
+			"apply_discount",
+		), 10, 2);
+		add_filter("woocommerce_product_get_regular_price", array(
+			$this,
+			"apply_discount",
+		), 10, 2);
+		add_filter("woocommerce_product_get_sale_price", array(
+			$this,
+			"apply_discount",
+		), 10, 2);
+
+
 		add_action("woocommerce_thankyou", array(
 			$this,
 			"on_thankyou"
@@ -71,7 +85,7 @@ class WCBA_Packs {
 
 		add_filter("woocommerce_locate_template", array(
 			$this,
-			"locate_template"
+			"template_proxy"
 		));
 	}
 
@@ -165,65 +179,55 @@ class WCBA_Packs {
 		<div id="wcba_pack_options" class="panel woocommerce_options_panel hidden">
 			<div class="options_group">
 			<?php
-			$relateds = "";
 			if ($product_object) {
 				if ($product_object->is_type("wcba_pack")) {
 					$relateds = $product_object->get_relateds();
-				}
-			}
-
-			woocommerce_wp_text_input(array(
-				"id" => "wcba_pack_relateds",
-				"label" => __("Related Products"),
-				"value" => $relateds,
-				"default" => "",
-				"placeholder" => "1|2|3"
-			));
-
-			$products = wc_get_products(array(
-				"type" => array(
-					"simple",
-					"variable"
-				)
-			));
-
-			$select_options = array();
-			foreach ($products as $product) {
-				$select_options[$product->get_ID()] = $product->get_name();
-			}
-			?>
-			<p class="form-field wcba_pack_store_products_field">
-				<label for="wcba_pack_store_productes">Store Products</label>
-				<select id="wcba_pack_store_products" class="select short" multiple>
-				<?php
-					foreach ($select_options as $id => $name) {
-						echo "<option value=\"".$id."\">".$name."</option>";
-					}
-				?>
-				</select>
-			</p>
-			<?php
-			/*$discount = 0;
-			if ($product_object) {
-				if ($product_object->is_type("wcba_pack")) {
 					$discount = $product_object->get_discount();
-				}
-			}
 
-			woocommerce_wp_text_input(array(
-				"id" => "wcba_pack_discount",
-				"label" => __("Discount percentage"),
-				"value" => $discount,
-				"default" => 0,
-				"placeholder" => "add a percentage"
-			));*/
-			?>
+					$products = wc_get_products(array(
+						"type" => array(
+							"simple",
+							"variable"
+						)
+					));
+
+
+					$select_options = array();
+					foreach ($products as $product) {
+						$select_options[$product->get_ID()] = $product->get_name();
+					}
+					woocommerce_wp_text_input(array(
+						"id" => "wcba_pack_relateds",
+						"label" => __("Related Products"),
+						"value" => $relateds,
+						"default" => "",
+						"placeholder" => "1|2|3"
+					));
+					?>
+					<p class="form-field wcba_pack_store_products_field">
+						<label for="wcba_pack_store_products">Store Products</label>
+						<select id="wcba_pack_store_products" class="select short" multiple><?php
+							foreach ($select_options as $id => $name) {
+								echo "<option value=\"{$id}\">{$name}</option>";
+							}
+						?></select>
+					</p>
+					<?php
+					woocommerce_wp_text_input(array(
+						"id" => "wcba_pack_discount",
+						"label" => __("Discount percentage"),
+						"value" => $discount,
+						"data_type" => "decimal",
+						"default" => 0,
+						"placeholder" => "add a percentage"
+					));?>
+					<div class="toolbar" style="padding: 10px 20px;">
+						<button id="wcba_pack_update" type="button" class="button button-primary">Create variations</button>
+					</div><?php
+				}
+			} ?>
 			</div>
-			<div class="toolbar" style="padding: 10px 20px;">
-				<button id="wcba_pack_update" type="button" disabled class="button button-primary">Save data</button>
-			</div>
-		</div>
-		<?php
+		</div><?php
 	}
 
 	/**
@@ -232,29 +236,39 @@ class WCBA_Packs {
 	 * @param integer $post_id
 	 * @return void
 	 */
-	public function save_pack_settings ($product_id) {
+	public function save_pack_settings ($product_id, $create_variations=false) {
 		$product = wc_get_product($product_id);
 		
 		if ($product && $product->is_type("wcba_pack")) {
-			$relateds = isset($_POST["_pack_relateds"]) ? sanitize_text_field($_POST["_pack_relateds"]) : "";
-			$product->set_relateds($relateds);
-
-			$discount = isset($_POST["_pack_discount"]) && is_numeric($_POST["_pack_discount"]) ? absint($_POST["_pack_discount"]) : 0;
+			$discount = isset($_POST["wcba_pack_discount"]) ? absint($_POST["wcba_pack_discount"]) : 0;
 			$product->set_discount($discount);
+
+			$relateds = isset($_POST["wcba_pack_relateds"]) ? sanitize_text_field($_POST["wcba_pack_relateds"]) : "";
+			$product->set_relateds($relateds, $create_variations);
 		}
 	}
 
 	public function on_pack_update () {
 		check_ajax_referer("wcba-pack-options");
 
-		$post_id = $_POST["_pack_id"];
+		$post_id = $_POST["wcba_pack_id"];
 
-		$this->save_pack_settings($post_id);
+		$this->save_pack_settings($post_id, true);
 
 		$product = wc_get_product($post_id);
 		echo json_encode(array("success" => true));
 
 		wp_die();
+	}
+
+	public function apply_discount ($price, $product_id) {
+		$product = wc_get_product($product_id);
+		echo $product->get_type() . "\n";
+		echo $product->get_meta("_wcba_role") . "\n";
+		if ($product->is_type("wcba_pack") || $product->get_meta("_wcba_role") == "pack_bundle") {
+			return 1000;
+		}
+		return $price;
 	}
 
 	/**
@@ -263,7 +277,7 @@ class WCBA_Packs {
 	 * @param integer $order_id
 	 * @return void
 	 */
-	private function on_thankyou ($order_id) {
+	public function on_thankyou ($order_id) {
 		if (!$order_id) {
 			return;
 		}
@@ -272,12 +286,14 @@ class WCBA_Packs {
 
 		foreach ($order->get_items() as $item_id => $item) {
 			$product = $item->get_product();
+			echo json_encode($product->get_data()) . "\n";
 
 			if ($product->is_type("wcba_pack")) {
+				echo json_encode($product->get_relateds(true)) . "\n";
 				$qty = $item->get_quantity();
 				$data = $product->get_data();
 				$relateds = $product->get_relateds(true);
-				echo print_r($relateds);
+				$this->log(print_r($relateds));
 			}
 		}
 	}
@@ -293,30 +309,12 @@ class WCBA_Packs {
 		file_put_contents($log_path."/log.txt", $data."\n", FILE_APPEND);
 	}
 
-	public function locate_template ($template_name, $template_path="", $default_path="") {
-		$file = basename($template_name);
-		$template = str_replace("plugins\/woocommerce\/templates", "plugins/wcba_packs/templates", $template_name);
-		echo $template_name . "\n";
+	public function template_proxy ($template_name, $template_path="", $default_path="") {
+		echo $template_name;
 		return $template_name;
-		$_template = $template;
-		$template_path = $woocommerce->template_url;
 
-		$plugin_path = untrailingslashit( plugin_dir_path( __FILE__ ) )  . '/template/woocommerce/';
-		// Look within passed path within the theme - this is priority
-    		$template = locate_template(array(
-      			$template_path . $template_name,
-      			$template_name
-    		));
-
-   		if (!$template && file_exists($plugin_path . $template_name)) {
-    			$template = $plugin_path . $template_name;
-		}
-
-   		if (!$template) {
-    			$template = $_template;
-		}
-
-   		return $template;
+		# /develop.casabuenosaires.net/wp-content/plugins/woocommerce/templates/single-product/add-to-cart/variable.php 
+		# 
 	}
 }
 
