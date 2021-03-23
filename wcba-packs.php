@@ -107,6 +107,11 @@ class WCBA_Packs {
 			$this,
 			"on_thankyou"
 		));
+
+		add_action("before_delete_post", array(
+			$this,
+			"before_delete_post"
+		));
 	}
 
 	/**
@@ -306,7 +311,7 @@ class WCBA_Packs {
 		woocommerce_variable_add_to_cart();
 	}
 
-	public function add_to_cart_handler () {
+	public function add_to_cart_handler ($product_id) {
 		$variation_id = empty( $_REQUEST['variation_id'] ) ? '' : absint( wp_unslash( $_REQUEST['variation_id'] ) );
 		$quantity     = empty( $_REQUEST['quantity'] ) ? 1 : wc_stock_amount( wp_unslash( $_REQUEST['quantity'] ) );
 		$variations   = array();
@@ -396,9 +401,7 @@ class WCBA_Packs {
 					}
 				}
 			} else if ($product->get_meta("_wcba_pack_role", true) == "wcba_pack_bundle") {
-				echo "Is reversed bundle\n";
 				$bundles = $product->get_meta("_wcba_pack_bundles");
-				echo "Bundles {$bundles}\n";
 				if ($bundles) {
 					foreach (explode("|", $bundles) as $bundle_id) {
 						$bundle = wc_get_product($bundle_id);
@@ -406,6 +409,34 @@ class WCBA_Packs {
 					}	
 				}
 			}
+		}
+	}
+
+	public function before_delete_post ($post_id) {
+		$product = wc_get_product($post_id);
+		if ($product) {
+			$bundles = $product->get_meta("_wcba_pack_bundles", true);
+			if ($product->is_type("variation")) {
+				$parent = wc_get_product($product->get_parent_id());
+				if ($parent->is_type("wcba_pack")) {
+					foreach (explode("|", $bundles) as $bundle) {
+						$rel_prod = wc_get_product($bundle);
+						$reverse_bundles = $rel_prod->get_meta("_wcba_pack_bundles", true);
+						$new_bundles = array();
+						foreach (explode("|", $reverse_bundles) as $bundle) {
+							if ($bundle != $product->get_ID()) {
+								$new_bundles[] = $bundle;
+							}
+						}
+						$new_bundles = implode("|", $new_bundles);
+						update_post_meta($rel_prod->get_ID(), "_wcba_pack_bundles", $new_bundles); 
+					}
+				}
+			} else if ($bundles) {
+				foreach (explode("|", $bundles) as $bundle) {
+					wp_delete_post($bundle);
+				}
+			}	
 		}
 	}
 }

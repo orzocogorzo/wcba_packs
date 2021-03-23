@@ -151,10 +151,13 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 			$bundles = array();
 
 			foreach ($relateds as $rel_prod) {
-				$reverse_bundles[$rel_prod->get_ID()] = array();
+				$reverse_bundles[$rel_prod->get_ID()] = $reverse_bundles[$rel_prod->get_ID()] ?
+					$reverse_bundles[$rel_prod->get_ID()] : array();
 				$rel_prod_name = $this->sanitize($rel_prod->get_name());
 				if ($rel_prod->is_type("variable")) {
 					foreach (array_map("wc_get_product", $rel_prod->get_children()) as $rel_var) {
+						$reverse_bundles[$rel_var->get_ID()] = $reverse_bundles[$rel_var->get_ID()] ?
+							$reverse_bundles[$rel_var->get_ID()] : array();
 						$is_related = true;
 						foreach ($own_var->get_variation_attributes(false) as $own_attr => $own_val) {
 							foreach ($rel_var->get_variation_attributes(false) as $rel_attr => $rel_val) {
@@ -175,7 +178,7 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 								}
 							}
 							$bundles[] = $rel_var->get_ID();
-							$reverse_bundles[$rel_prod->get_ID()][] = $own_var->get_ID();
+							$reverse_bundles[$rel_var->get_ID()][] = $own_var->get_ID();
 						}
 					}
 
@@ -209,15 +212,27 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 			$own_var->save();
 		}
 
-		foreach ($relateds as $rel_prod) {
-			add_post_meta($rel_prod->get_ID(), "_wcba_pack_role", "wcba_pack_bundle");
-			add_post_meta($rel_prod->get_ID(), "_wcba_pack_bundles", implode("|", $reverse_bundles[$rel_prod->get_ID()]));
+		foreach ($reverse_bundles as $rel_id => $bundles) {
+			if (sizeof($bundles) > 0) {
+				$product = wc_get_product($rel_id);
+				add_post_meta($product->get_ID(), "_wcba_pack_role", "wcba_pack_bundle");
+				add_post_meta($product->get_ID(), "_wcba_pack_bundles", implode("|", $bundles));
+			}
 		}
 	}
 
 	public function clear_bundles () {
 		foreach ($this->get_children() as $child) {
 			$variation = wc_get_product($child);
+			$bundles = $variation->get_meta("_wcba_pack_bundles", true);
+			if ($bundles) {
+				foreach (explode("|", $bundles) as $bundle) {
+					$rel_prod = wc_get_product($bundle);
+					if ($rel_prod) {
+						delete_post_meta($rel_prod->get_ID(), "_wcba_pack_bundles");
+					}
+				}
+			}
 			wp_delete_post($variation->get_ID());
 		}
 

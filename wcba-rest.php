@@ -34,7 +34,7 @@ class WCBA_Rest {
 			"methods" => "POST",
 			"callback" => array(
 				$this,
-				"create_pack"
+				"add_pack"
 			),
 			"args" => array(
 				"name" => array(
@@ -115,7 +115,7 @@ class WCBA_Rest {
 
 	public function list_packs (WP_REST_Request $request) {
 		$args = array(
-			"product_type" => "wcba_packs"
+			"type" => "wcba_pack"
 		);
 		$packs = wc_get_products($args);
 
@@ -168,14 +168,20 @@ class WCBA_Rest {
 	public function debug (WP_REST_Request $request) {
 		$id = $request["id"];
 		$product = wc_get_product($id);
-		$variations = $product->get_available_variations(); 
-		#echo json_encode($variations);
-		$variations = array_map("wc_get_product", $product->get_children());
-		$data = array();
-		foreach ($variations as $var) {
-			$data[] = $var->get_data();
+		$parent = wc_get_product($product->get_parent_id());
+		$bundles = null;
+		if ($parent && $parent->is_type("wcba_pack")) {
+			$bundles = $product->get_meta("_wcba_pack_bundles", true);
+		} else if ($product->get_meta("_wcba_pack_role", true) == "wcba_pack_bundle") {
+			$bundles = $product->get_meta("_wcba_pack_bundles", true);
 		}
-		echo json_encode($data);
+
+		$res = array();
+		if ($bundles) {
+			$res = explode("|", $bundles);
+		}
+
+		echo json_encode($res);
 	}
 }
 
