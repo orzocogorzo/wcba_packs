@@ -350,12 +350,10 @@ class WCBA_Packs {
 
 	public function on_set_stock ($product) {
 		if ($product->is_type("variation")) {
-			echo get_post_meta($product->get_ID(), "_wcba_pack_role", true);
-			if (get_post_meta($product->get_ID(), "_wcba_pack_role", true) === "wcba_bundle") {
-				echo "Changing WCBA_Bundle stock\n";
-			}
-		} else if ($product->is_type("wcba_pack")) {
-			echo "Updating WCBA_Pack stock\n";	
+			# $parent = wc_get_product($product->get_parent_id());
+			# if ($parent->is_type("wcba_pack")) {
+			# } else if ($product->get_meta("_wcba_pack_role", true) == "wcba_pack_bundle") {
+			# }
 		}
 	}
 
@@ -363,9 +361,6 @@ class WCBA_Packs {
 		$product->clear_bundles();
 	}
 
-	#public function on_update_discount ($product, $discount, $old_discount) {
-	#}
-	
 	public function is_variation_active ($is_active, $variation) {
 		return $variation->is_in_stock();
 	}
@@ -386,27 +381,53 @@ class WCBA_Packs {
 		foreach ($order->get_items() as $item_id => $item) {
 			$qty = $item->get_quantity();
 			$product = $item->get_product();
+			$stock = $product->get_stock_quantity();
+			$role = $product->get_meta("_wcba_pack_role", true);
+
+			echo("QTY: {$qty}\n");
+			echo("STOCK: {$stock}\n");
 
 			if ($product->is_type("wcba_pack")) {
 				// pass
+			} else if ($role && $role == "wcba_pack_bundle") { 
+				$bundles = $product->get_meta("_wcba_pack_bundles", true);
+				foreach (explode("|", $bundles) as $bundle_id) {
+					$bundle = wc_get_product($bundle_id);
+					$bundle_stock = $bundle->get_stock_quantity();
+					$qty = $bundle_stock - $qty == $stock ? $qty : 0;
+					wc_update_product_stock($bundle, $qty, "decrease");
+				}
 			} else if ($product->is_type("variation")) {
 				$parent = wc_get_product($product->get_parent_id());
 				if ($parent->is_type("wcba_pack")) {
 					$bundles = $product->get_meta("_wcba_pack_bundles", true);
-					if ($bundles) {
-						foreach (explode("|", $bundles) as $bundle_id) {
-							$bundle = wc_get_product($bundle_id);
-							wc_update_product_stock($bundle, $qty, "decrease");
-						}
-					}
-				}
-			} else if ($product->get_meta("_wcba_pack_role", true) == "wcba_pack_bundle") {
-				$bundles = $product->get_meta("_wcba_pack_bundles");
-				if ($bundles) {
-					foreach (explode("|", $bundles) as $bundle_id) {
+					$bundles = explode("|", $bundles);
+					foreach ($bundles as $bundle_id) {
 						$bundle = wc_get_product($bundle_id);
 						wc_update_product_stock($bundle, $qty, "decrease");
-					}	
+					}
+
+					$siblings = array_map("wc_get_product", $parent->get_children());
+					foreach ($siblings as $sibling) {
+						if ($sibling->get_ID() == $product->get_ID()) {
+							continue;
+						}
+
+						$sibling_bundles = $sibling->get_meta("_wcba_pack_bundles", true);
+						$sibling_bundles = explode("|", $sibling_bundles);
+						$is_related = false;
+						foreach ($sibling_bundles as $sibling_bundle) {
+							if (in_array($sibling_bundle, $bundles)) {
+								$is_related = true;
+							}
+						}
+
+						if ($is_related) {
+							$sibling_stock = $sibling->get_stock_quantity();
+							$qty = $sibling_stock == 0 ? 0 : $sibling_stock - $qty == $stock ? $qty : 0;
+							wc_update_product_stock($sibling->get_ID(), $qty, "decrease");
+						}
+					}
 				}
 			}
 		}

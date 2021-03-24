@@ -207,7 +207,7 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 			$own_var->set_regular_price($price);
 			$own_var->set_sale_price($price);
 
-			add_post_meta($own_var->get_ID(), "_wcba_pack_bundles", implode("|", $bundles));
+			update_post_meta($own_var->get_ID(), "_wcba_pack_bundles", implode("|", $bundles));
 
 			$own_var->save();
 		}
@@ -215,8 +215,8 @@ class WC_Product_WCBA_Pack extends WC_Product_Variable {
 		foreach ($reverse_bundles as $rel_id => $bundles) {
 			if (sizeof($bundles) > 0) {
 				$product = wc_get_product($rel_id);
-				add_post_meta($product->get_ID(), "_wcba_pack_role", "wcba_pack_bundle");
-				add_post_meta($product->get_ID(), "_wcba_pack_bundles", implode("|", $bundles));
+				update_post_meta($product->get_ID(), "_wcba_pack_role", "wcba_pack_bundle");
+				update_post_meta($product->get_ID(), "_wcba_pack_bundles", implode("|", $bundles));
 			}
 		}
 	}
